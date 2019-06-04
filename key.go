@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/asn1"
 	"errors"
 	"fmt"
@@ -244,6 +245,32 @@ func (ps *Key) getPublicKeyID(publicKey crypto.PublicKey) ([]byte, error) {
 	return nil, fmt.Errorf("invalid result from GetAttributeValue")
 }
 
+func (ps *Key) getPublickeyEID() (crypto.PublicKey, error) {
+	template := []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_CERTIFICATE),
+	}
+
+	publicKeyHandle, err := ps.findObject(template)
+	if err != nil {
+		return nil, err
+	}
+
+	attrs, err := ps.module.GetAttributeValue(*ps.session, publicKeyHandle, []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_VALUE, nil),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(attrs) > 0 && attrs[0].Type == pkcs11.CKA_VALUE {
+		c, err := x509.ParseCertificate([]byte(attrs[0].Value))
+		if err != nil {
+			return nil, err
+		}
+		return c.PublicKey.(*rsa.PublicKey), nil
+	}
+	return nil, fmt.Errorf("invalid result from GetAttributeValue")
+}
+
 func (ps *Key) setup() error {
 	// Open a session
 	ps.sessionMu.Lock()
@@ -253,6 +280,12 @@ func (ps *Key) setup() error {
 		return fmt.Errorf("pkcs11key: opening session: %s", err)
 	}
 	ps.session = &session
+
+	ps.publicKey, err = ps.getPublickeyEID()
+	if err != nil {
+		ps.module.CloseSession(session)
+		return fmt.Errorf("looking up public EID key: %s", err)
+	}
 
 	publicKeyID, err := ps.getPublicKeyID(ps.publicKey)
 	if err != nil {
